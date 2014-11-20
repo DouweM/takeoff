@@ -1,0 +1,86 @@
+# Require the non-default launch plans and stages we want to use.
+require "takeoff/plan/heroku"
+
+require "takeoff/stage/verify_circle_ci_status"
+require "takeoff/stage/heroku/precompile_and_sync_assets"
+require "takeoff/stage/heroku/verify_staging_up_to_date"
+
+# Require custom stages that aren't included with Takeoff.
+require "./config/takeoff/update_database_indexes"
+require "./config/takeoff/seed_database"
+
+# Our app is hosted on Heroku, so base plans on Heroku by default.
+default_plan :heroku
+
+stages do
+  # Add simple custom stages in-line as lambdas.
+  # This one uses https://github.com/bkeepers/dotenv-deployment to load
+  # environment variables based on the environment we're deploying to, like
+  # like `ENV["GITHUB_OAUTH_TOKEN"]` which is used by `VerifyCircleCiStatus`.
+  insert_after Takeoff::Stage::Log, (lambda do |env|
+    ENV["RACK_ENV"] = env[:environment]
+
+    require "dotenv/deployment"
+  end)
+
+  # Add stages that come out of the box but aren't included by default.
+  # `VerifyCircleCiStatus` verifies that the commit to be pushed has been tested successfully on Circle CI;
+  # `PrecompileAndSyncAssets` precompiles Rails assets and syncs them to Amazon S3 using the AssetSync gem.
+  insert_before Takeoff::Stage::PointCheckpointToDevelopment, [
+    Takeoff::Stage::VerifyCircleCiStatus,
+    Takeoff::Stage::Heroku::PrecompileAndSyncAssets
+  ]
+
+  # Add custom stages defined in dedicated classes.
+  # `UpdateDatabaseIndexes` updates our MongoDB indexes if necessary;
+  # `SeedDatabase` seeds our database with bootstrap data.
+  insert_after Takeoff::Stage::Heroku::MigrateDatabase, [
+    Stinngo::Takeoff::UpdateDatabaseIndexes,
+    Stinngo::Takeoff::SeedDatabase
+  ]
+end
+
+# Set the GitHub repo the `VerifyCircleCiStatus stage should check the status for.
+env[:github_repo] = "toopia/Stinngo-Rails"
+
+# We have a dedicated "playground" Heroku app where we test large features 
+# that are still far from ready for staging or production.
+plan :playground do
+  env.merge!(
+    environment:        "playground",
+    development_branch: "playground",
+    checkpoint_branch:  "playground",
+    server_remote:      "playground"
+  )
+end
+
+# Staging is pretty straightforward.
+plan :staging do
+  env.merge!(
+    environment:        "staging",
+    checkpoint_branch:  "staging",
+    server_remote:      "staging"
+  )
+end
+
+# And here's production.
+plan :production do
+  # Except for `server_remote`, these are the defaults for `:heroku`, but I like to list them here for clarity.
+  env.merge!(
+    environment:        "production",
+    checkpoint_branch:  "master",
+    server_remote:      "production"
+  )
+
+  stages do
+    # Another optional stage that comes out of the box:
+    # It verifies that the staging server is up to date before deploying to production.
+    # To know where to check, it requires a Heroku-based launch plan called `:staging`, which we happen to have.
+    insert_before Takeoff::Stage::Heroku::PrecompileAndSyncAssets, 
+      Takeoff::Stage::Heroku::VerifyStagingUpToDate
+  end
+end
+
+# Because we don't want a plain `takeoff launch` command to use the unconfigured
+# `:heroku` plan, we set `:staging` to be the default.
+default_plan :staging
