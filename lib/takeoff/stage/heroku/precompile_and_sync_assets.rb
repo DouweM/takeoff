@@ -5,7 +5,7 @@ module Takeoff
     module Heroku
       class PrecompileAndSyncAssets < Base
         def run?(env)
-          files = %w(app/assets lib/assets vendor/asset Gemfile.lock config/initializers/assets.rb)
+          files = %w(app/assets lib/assets vendor/assets Gemfile.lock config/initializers/assets.rb)
           files_have_changed?(env[:deployed_commit], env[:new_commit], files)
         end
 
